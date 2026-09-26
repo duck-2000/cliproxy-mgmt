@@ -1,4 +1,4 @@
-# act-pubx-workflow: v4 variant=plain sha256=060b5caf5221299d
+# act-pubx-workflow: v4 variant=plain sha256=cc8059448ca9dffb
 name: act-pubx session runner
 
 on:
@@ -23,6 +23,14 @@ on:
         description: '1=启用加密缓存(~/local-cache); 0=关闭'
         required: false
         default: '1'
+      group:
+        description: '组名; 空 = 不启用组存储(开工 restore / 收工 backup 同一个 tag)'
+        required: false
+        default: ''
+      store_url:
+        description: '组存储工具(单文件 oci-store)的下载地址'
+        required: false
+        default: ''
 
 jobs:
   run:
@@ -148,6 +156,34 @@ jobs:
             echo "::warning::缓存解密/展开失败 → 跳过本次缓存"
           fi
 
+      - name: 恢复组存储(与会话并行)
+        if: github.event.inputs.group != ''
+        env:
+          GRP: ${{ github.event.inputs.group }}
+          SURL: ${{ github.event.inputs.store_url }}
+        run: |
+          set -uo pipefail
+          # 组存储: 多个 profile 共用同一份目录, 靠 oci-store 以 tag 为单位收发。
+          # 只传"哪个目录、哪个 tag" —— 中心/令牌/加密口令都归工具自己, 我们不做兜底也不
+          # 碰加密(缺依赖时工具自己会报错, 那也会落到下面那个 rc 分支里)。
+          B="$RUNNER_TEMP/actx/oci-store"
+          if [ ! -s "$B" ]; then
+            if ! curl -fsSL "$SURL" -o "$B"; then
+              echo "::warning::组存储: 工具取不到 ($SURL) → 本次从空开始"
+              exit 0
+            fi
+            chmod +x "$B"
+          fi
+          mkdir -p /tmp/storage
+          "$B" restore /tmp/storage --tag "$GRP"
+          rc=$?
+          case "$rc" in
+            0) echo "✓ 组存储已就位: /tmp/storage/$GRP" ;;
+            4) echo "组 '$GRP' 还没有快照(首次) → 从空开始" ;;
+            *) echo "::warning::组存储拉取失败 (rc=$rc) → 从空开始(不拿半份坏数据起)" ;;
+          esac
+          exit 0
+
       - name: 等待会话结束
         run: |
           set -uo pipefail
@@ -193,3 +229,34 @@ jobs:
         with:
           path: ${{ steps.prep.outputs.cachedir }}
           key: ${{ runner.os }}-actcache-ct-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # 组存储的推送放**最后**: 它可能推很久(首次是全量), 放前面会拖掉上面那条旧路径
+      # (加密缓存)的时间。而它自己是 append-only + 幂等的 —— 被 job 上限砍掉只需重跑。
+      - name: 备份组存储(总是执行)
+        if: always() && github.event.inputs.group != ''
+        env:
+          GRP: ${{ github.event.inputs.group }}
+          SURL: ${{ github.event.inputs.store_url }}
+        run: |
+          set -uo pipefail
+          D="/tmp/storage/$GRP"
+          if [ ! -d "$D" ]; then echo "没有 $D → 不保存"; exit 0; fi
+          B="$RUNNER_TEMP/actx/oci-store"
+          if [ ! -s "$B" ]; then
+            if ! curl -fsSL "$SURL" -o "$B"; then
+              echo "::warning::组存储: 工具取不到 ($SURL) → 本次不推"
+              exit 0
+            fi
+            chmod +x "$B"
+          fi
+          # 收工推送是**增量**的(块级去重), 所以日常很快; 首次全量可能顶到 job 上限,
+          # 那时退出码 3(已传的块已生效) → 下次重跑接着传。
+          "$B" backup "$D" --tag "$GRP" -R gh
+          rc=$?
+          case "$rc" in
+            0) echo "✓ 组存储已推送 (tag=$GRP)" ;;
+            3) echo "::warning::组存储: 部分已传、快照未提交(rc=3) —— 可安全重跑, 已传的块会跳过" ;;
+            4) echo "::warning::组存储: tag '$GRP' 没有可用快照(rc=4)" ;;
+            *) echo "::warning::组存储推送失败 (rc=$rc) —— 本次不推, 下次重跑会接上" ;;
+          esac
+          exit 0
