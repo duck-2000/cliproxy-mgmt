@@ -1,4 +1,4 @@
-# act-pubx-workflow: v4 variant=plain sha256=cc8059448ca9dffb
+# act-pubx-workflow: v4 variant=plain sha256=d45def8c69d2b699
 name: act-pubx session runner
 
 on:
@@ -162,10 +162,18 @@ jobs:
           GRP: ${{ github.event.inputs.group }}
           SURL: ${{ github.event.inputs.store_url }}
         run: |
+          # `set +e` 必须有: GitHub 把 `run:` 当 **bash -e {脚本}** 跑, 脚本里再写
+          # `set -uo pipefail` 也**不会**关掉 -e —— 而 `restore` 返回 **4**(首次、还没有快照)
+          # 是正常路径。不加这句, 步骤会在 case 之前当场中止: 步骤失败 → job 失败 →
+          # 后面带默认 if: success() 的“等待会话结束”被跳过。(真跑撞出来的。)
+          set +e
           set -uo pipefail
           # 组存储: 多个 profile 共用同一份目录, 靠 oci-store 以 tag 为单位收发。
           # 只传"哪个目录、哪个 tag" —— 中心/令牌/加密口令都归工具自己, 我们不做兜底也不
           # 碰加密(缺依赖时工具自己会报错, 那也会落到下面那个 rc 分支里)。
+          # 目录自己建: 以前依赖前面那步(它先 mkdir -p 了 $RUNNER_TEMP/actx) —— 一旦顺序变了,
+          # `curl -o` 会因目录不存在而失败, 而那句提示会说成"工具取不到"(指错方向)。
+          mkdir -p "$RUNNER_TEMP/actx"
           B="$RUNNER_TEMP/actx/oci-store"
           if [ ! -s "$B" ]; then
             if ! curl -fsSL "$SURL" -o "$B"; then
@@ -238,9 +246,13 @@ jobs:
           GRP: ${{ github.event.inputs.group }}
           SURL: ${{ github.event.inputs.store_url }}
         run: |
+          # 同恢复那步: `restore/backup` 的非零退出码(3=部分已传、 4=没有快照)都是
+          # **正常路径**, 而 GitHub 的 run: 是 `bash -e` —— 不关掉它就会把“正常”报成 job 失败。
+          set +e
           set -uo pipefail
           D="/tmp/storage/$GRP"
           if [ ! -d "$D" ]; then echo "没有 $D → 不保存"; exit 0; fi
+          mkdir -p "$RUNNER_TEMP/actx"      # 同上: 不依赖别的步骤替我们建目录
           B="$RUNNER_TEMP/actx/oci-store"
           if [ ! -s "$B" ]; then
             if ! curl -fsSL "$SURL" -o "$B"; then
