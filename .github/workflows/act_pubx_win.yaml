@@ -1,4 +1,4 @@
-# act-pubx-workflow: v5 variant=plain sha256=a62a18bede685769
+# act-pubx-workflow: v5 variant=plain sha256=edaf32117340b807
 name: actx windows session
 
 on:
@@ -14,7 +14,7 @@ on:
       timeout:
         description: '有效工作时长(分钟)'
         required: false
-        default: '240'
+        default: '60'
       job_timeout:
         description: 'job 硬上限(分钟)'
         required: false
@@ -93,7 +93,7 @@ jobs:
 
       - name: 启动会话
         env:
-          WORK_MIN: ${{ github.event.inputs.timeout || 240 }}
+          WORK_MIN: ${{ github.event.inputs.timeout || 60 }}
         run: |
           set -uo pipefail
           D="$RUNNER_TEMP/actx"
@@ -103,7 +103,7 @@ jobs:
           sleep 3
           P=$(cat "$D/session.pid" 2>/dev/null || echo "")
           if [ -z "$P" ]; then echo "::error::会话没起来(没有 pid)"; exit 1; fi
-          echo "✓ 会话已后台启动 (pid $P); 软超时由载荷自己按 $WORK_MIN 分钟收工"
+          echo "✓ 会话已后台启动 (pid $P); 有效时长 $WORK_MIN min 由载荷判(有人连着不收工, @timeout 可重设)"
 
       - name: 恢复缓存
         id: cacherestore
