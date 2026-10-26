@@ -1,4 +1,4 @@
-# act-pubx-workflow: v5 variant=plain sha256=edaf32117340b807
+# act-pubx-workflow: v5 variant=plain sha256=f132e72f2335ed5e
 name: actx windows session
 
 on:
@@ -240,6 +240,14 @@ jobs:
             kill -0 "$P" 2>/dev/null && return 0
             powershell -NoProfile -Command "if (Get-Process -Id $P -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
           }
+          tick_stale() {
+            local f="$D/tick" mt now
+            [ -f "$f" ] || return 1              # 还没开始踩 -> 不判
+            mt=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+            [ "$mt" -gt 0 ] || return 1
+            now=$(date +%s)
+            [ $((now - mt)) -gt 600 ]
+          }
           IV="${SIV:-}"
           case "$IV" in ''|*[!0-9]*) IV=900 ;; esac
           if [ -n "$GRP" ] && [ "$IV" -gt 0 ] && [ -x "$D/store_push.sh" ]; then
@@ -252,6 +260,10 @@ jobs:
           TP=$!
           n=0
           while alive; do
+            if tick_stale; then
+              echo "::warning::载荷 10 分钟没踩 tick → 当作会话已结束(心跳/时长上限都在那个循环里, 它不会再动了)"
+              break
+            fi
             if [ "$IV" -gt 0 ] && [ "$(date +%s)" -ge "$next" ]; then
               n=$((n + 1))
               echo "---- 组存储定时推送 #$n ----"
